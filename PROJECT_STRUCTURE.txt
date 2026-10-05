@@ -1,0 +1,12 @@
+ESP8266_Dino_Touch/
+├── ESP8266_Dino_Touch.ino
+├── README.md
+├── LICENSE
+├── .gitignore
+└── docs/
+    ├── wiring_diagram.png
+    ├── wiring_diagram.svg
+    ├── pin_map.png
+    ├── game_preview.png
+    ├── setup.md
+    └── troubleshooting.md
