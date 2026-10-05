@@ -1,415 +1,517 @@
 /*
-  ESP8266 Dino Touch
-  Board : NodeMCU V3 ESP8266 12E CH340
-  Display: 128x64 SH1106 I2C OLED
-  Input  : TTP223 capacitive touch sensor
-  Buzzer : Not used
-
-  Connections
-  -----------
-  OLED GND -> GND
-  OLED VCC -> 3V3
-  OLED SCL -> D1 / GPIO5
-  OLED SDA -> D2 / GPIO4
-
-  TTP223 GND -> GND
-  TTP223 VCC -> 3V3
-  TTP223 OUT -> D5 / GPIO14
-*/
+ * ESP8266 Dino Run
+ * Board  : NodeMCU ESP8266
+ * Display: 1.3" SH1106 OLED 128x64
+ * Input  : TTP223 Capacitive Touch Sensor
+ *
+ * OLED:
+ * SDA -> D2 / GPIO4
+ * SCL -> D1 / GPIO5
+ *
+ * TTP223:
+ * OUT -> D5 / GPIO14
+ */
 
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
 
-// ======================================================
-// DISPLAY
-// ======================================================
+// ----------------------------------------------------
+// OLED
+// ----------------------------------------------------
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-#define OLED_RESET -1
 #define OLED_ADDRESS 0x3C
+
+#define OLED_SDA D2
+#define OLED_SCL D1
 
 Adafruit_SH1106G display(
   SCREEN_WIDTH,
   SCREEN_HEIGHT,
   &Wire,
-  OLED_RESET
+  -1
 );
 
-// ======================================================
-// PIN
-// ======================================================
+// ----------------------------------------------------
+// TTP223 TOUCH SENSOR
+// ----------------------------------------------------
 
 #define TOUCH_PIN D5
 
-// ======================================================
-// GAME SETTINGS
-// ======================================================
+// TTP223 normal configuration:
+// Not touched = LOW
+// Touched     = HIGH
 
-const int GROUND_Y = 54;
+bool lastTouchState = LOW;
 
-const int DINO_X = 13;
-const int DINO_W = 12;
-const int DINO_H = 15;
+// ----------------------------------------------------
+// DINO SPRITES
+// ----------------------------------------------------
 
-const int CACTUS_W = 7;
-const int CACTUS_H = 16;
-
-float dinoY;
-float dinoVelocity = 0;
-
-float gravity = 0.78;
-float jumpPower = -8.4;
-
-float cactusX = 135;
-float gameSpeed = 2.6;
-
-unsigned long score = 0;
-unsigned long highScore = 0;
-
-unsigned long lastFrameTime = 0;
-const unsigned long FRAME_TIME = 33;
-
-// Touch debounce
-bool oldTouchState = LOW;
-unsigned long lastTouchTime = 0;
-const unsigned long TOUCH_DEBOUNCE = 120;
-
-enum GameState {
-  START_SCREEN,
-  PLAYING,
-  GAME_OVER
+const unsigned char PROGMEM dino_run1[] = {
+  0x01, 0xfe,
+  0x01, 0xfe,
+  0x01, 0xfe,
+  0x01, 0xfe,
+  0x01, 0xf8,
+  0x03, 0xf0,
+  0x3f, 0xe0,
+  0x7f, 0xe0,
+  0xff, 0xe0,
+  0xff, 0xe0,
+  0x7f, 0xc0,
+  0x3f, 0x80,
+  0x1e, 0x00,
+  0x18, 0x00,
+  0x10, 0x00,
+  0x10, 0x00
 };
 
-GameState gameState = START_SCREEN;
+const unsigned char PROGMEM dino_run2[] = {
+  0x01, 0xfe,
+  0x01, 0xfe,
+  0x01, 0xfe,
+  0x01, 0xfe,
+  0x01, 0xf8,
+  0x03, 0xf0,
+  0x3f, 0xe0,
+  0x7f, 0xe0,
+  0xff, 0xe0,
+  0xff, 0xe0,
+  0x7f, 0xc0,
+  0x3f, 0x80,
+  0x1a, 0x00,
+  0x0a, 0x00,
+  0x02, 0x00,
+  0x02, 0x00
+};
 
-// ======================================================
-// DINO
-// ======================================================
+const unsigned char PROGMEM cactus_sprite[] = {
+  0x00, 0x00,
+  0x00, 0x00,
+  0x02, 0x00,
+  0x03, 0x00,
+  0x23, 0x00,
+  0x33, 0x00,
+  0x33, 0x18,
+  0x3b, 0x38,
+  0x3f, 0x38,
+  0x3f, 0x38,
+  0x1f, 0xf8,
+  0x0f, 0xf0,
+  0x07, 0x00,
+  0x07, 0x00,
+  0x07, 0x00,
+  0x07, 0x00
+};
 
-void drawDino(int x, int y, bool running) {
-  display.fillRect(x + 5, y, 7, 6, SH110X_WHITE);
-  display.fillRect(x + 10, y + 4, 3, 3, SH110X_WHITE);
-  display.drawPixel(x + 9, y + 2, SH110X_BLACK);
+// ----------------------------------------------------
+// DINO PHYSICS
+// ----------------------------------------------------
 
-  display.fillRect(x + 3, y + 6, 7, 6, SH110X_WHITE);
+float dinoY = 48.0;
+float velocityY = 0.0;
 
-  display.drawLine(x + 3, y + 7, x, y + 5, SH110X_WHITE);
-  display.drawLine(x, y + 5, x + 2, y + 9, SH110X_WHITE);
+float gravity = 1.3;
+float jumpPower = -9.5;
 
-  display.drawLine(x + 8, y + 8, x + 11, y + 9, SH110X_WHITE);
+bool isGrounded = true;
 
-  if (running) {
-    if ((millis() / 120) % 2 == 0) {
-      display.drawLine(x + 4, y + 11, x + 3, y + 14, SH110X_WHITE);
-      display.drawLine(x + 8, y + 11, x + 9, y + 14, SH110X_WHITE);
-    } else {
-      display.drawLine(x + 4, y + 11, x + 5, y + 14, SH110X_WHITE);
-      display.drawLine(x + 8, y + 11, x + 7, y + 14, SH110X_WHITE);
-    }
-  } else {
-    display.drawLine(x + 4, y + 11, x + 4, y + 14, SH110X_WHITE);
-    display.drawLine(x + 8, y + 11, x + 8, y + 14, SH110X_WHITE);
-  }
-}
-
-// ======================================================
+// ----------------------------------------------------
 // CACTUS
-// ======================================================
+// ----------------------------------------------------
 
-void drawCactus(int x) {
-  int y = GROUND_Y - CACTUS_H;
+float cactusX = 128.0;
+float cactusSpeed = 4.0;
 
-  display.fillRect(x + 2, y, 3, CACTUS_H, SH110X_WHITE);
+int obstacleType = 1;
+int cactusWidth = 16;
 
-  display.fillRect(x, y + 6, 2, 6, SH110X_WHITE);
-  display.drawLine(x, y + 11, x + 3, y + 11, SH110X_WHITE);
+// ----------------------------------------------------
+// GAME
+// ----------------------------------------------------
 
-  display.fillRect(x + 5, y + 4, 2, 6, SH110X_WHITE);
-  display.drawLine(x + 4, y + 9, x + 6, y + 9, SH110X_WHITE);
-}
+int score = 0;
 
-// ======================================================
-// GROUND
-// ======================================================
+bool gameOver = false;
+bool useFrame1 = true;
 
-void drawGround() {
-  display.drawLine(0, GROUND_Y, 127, GROUND_Y, SH110X_WHITE);
+// ----------------------------------------------------
+// ANIMATION
+// ----------------------------------------------------
 
-  int offset = (millis() / 35) % 18;
+unsigned long previousMillis = 0;
 
-  for (int x = -offset; x < 128; x += 18) {
-    display.drawPixel(x, GROUND_Y + 4, SH110X_WHITE);
+const unsigned long animationInterval = 100;
 
-    if (x + 5 < 128) {
-      display.drawPixel(x + 5, GROUND_Y + 6, SH110X_WHITE);
-    }
-  }
-}
-
-// ======================================================
-// TOUCH
-// ======================================================
-
-bool newTouch() {
-  bool currentTouch = digitalRead(TOUCH_PIN);
-  bool pressed = false;
-
-  if (
-    currentTouch == HIGH &&
-    oldTouchState == LOW &&
-    millis() - lastTouchTime > TOUCH_DEBOUNCE
-  ) {
-    pressed = true;
-    lastTouchTime = millis();
-  }
-
-  oldTouchState = currentTouch;
-  return pressed;
-}
-
-// ======================================================
-// COLLISION
-// ======================================================
-
-bool checkCollision() {
-  int dinoLeft = DINO_X + 2;
-  int dinoRight = DINO_X + DINO_W - 1;
-
-  int dinoTop = (int)dinoY + 1;
-  int dinoBottom = (int)dinoY + DINO_H;
-
-  int cactusLeft = (int)cactusX + 1;
-  int cactusRight = (int)cactusX + CACTUS_W;
-
-  int cactusTop = GROUND_Y - CACTUS_H;
-  int cactusBottom = GROUND_Y;
-
-  return (
-    dinoRight >= cactusLeft &&
-    dinoLeft <= cactusRight &&
-    dinoBottom >= cactusTop &&
-    dinoTop <= cactusBottom
-  );
-}
-
-// ======================================================
-// NEW GAME
-// ======================================================
-
-void resetGame() {
-  dinoY = GROUND_Y - DINO_H;
-  dinoVelocity = 0;
-
-  cactusX = 140 + random(10, 45);
-
-  gameSpeed = 2.6;
-  score = 0;
-}
-
-// ======================================================
-// JUMP
-// ======================================================
-
-void jump() {
-  float groundPosition = GROUND_Y - DINO_H;
-
-  if (dinoY >= groundPosition - 1) {
-    dinoVelocity = jumpPower;
-  }
-}
-
-// ======================================================
-// UPDATE GAME
-// ======================================================
-
-void updateGame() {
-  dinoVelocity += gravity;
-  dinoY += dinoVelocity;
-
-  float groundPosition = GROUND_Y - DINO_H;
-
-  if (dinoY >= groundPosition) {
-    dinoY = groundPosition;
-    dinoVelocity = 0;
-  }
-
-  cactusX -= gameSpeed;
-
-  if (cactusX < -CACTUS_W) {
-    cactusX = 128 + random(25, 80);
-    score++;
-
-    if (gameSpeed < 6.4) {
-      gameSpeed += 0.10;
-    }
-  }
-
-  if (checkCollision()) {
-    gameState = GAME_OVER;
-
-    if (score > highScore) {
-      highScore = score;
-    }
-  }
-}
-
-// ======================================================
-// START SCREEN
-// ======================================================
-
-void drawStartScreen() {
-  display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
-
-  display.setTextSize(2);
-  display.setCursor(34, 4);
-  display.print("DINO");
-
-  display.setTextSize(1);
-  display.setCursor(23, 24);
-  display.print("Dokun ve basla");
-
-  drawGround();
-
-  drawDino(
-    15,
-    GROUND_Y - DINO_H,
-    true
-  );
-
-  drawCactus(100);
-
-  display.display();
-}
-
-// ======================================================
-// GAME SCREEN
-// ======================================================
-
-void drawGame() {
-  display.clearDisplay();
-
-  drawGround();
-
-  bool grounded =
-    dinoY >=
-    (GROUND_Y - DINO_H - 1);
-
-  drawDino(
-    DINO_X,
-    (int)dinoY,
-    grounded
-  );
-
-  drawCactus(
-    (int)cactusX
-  );
-
-  display.setTextColor(SH110X_WHITE);
-  display.setTextSize(1);
-
-  display.setCursor(92, 2);
-  display.print(score);
-
-  display.display();
-}
-
-// ======================================================
-// GAME OVER
-// ======================================================
-
-void drawGameOver() {
-  display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
-
-  display.setTextSize(2);
-  display.setCursor(10, 5);
-  display.print("GAME OVER");
-
-  display.setTextSize(1);
-
-  display.setCursor(34, 28);
-  display.print("SKOR: ");
-  display.print(score);
-
-  display.setCursor(31, 39);
-  display.print("REKOR: ");
-  display.print(highScore);
-
-  display.setCursor(15, 54);
-  display.print("Tekrar dokun");
-
-  display.display();
-}
-
-// ======================================================
+// ----------------------------------------------------
 // SETUP
-// ======================================================
+// ----------------------------------------------------
 
 void setup() {
-  Serial.begin(115200);
 
+  // TTP223 has its own output circuitry.
+  // Do NOT use INPUT_PULLUP.
   pinMode(TOUCH_PIN, INPUT);
 
-  // ESP8266 NodeMCU:
-  // SDA = D2 / GPIO4
-  // SCL = D1 / GPIO5
-  Wire.begin(D2, D1);
+  // ESP8266 I2C
+  Wire.begin(OLED_SDA, OLED_SCL);
 
-  delay(250);
+  // Random seed
+  randomSeed(analogRead(A0) + micros());
 
+  // OLED
   if (!display.begin(OLED_ADDRESS, true)) {
-    Serial.println("OLED bulunamadi!");
-
     while (true) {
       delay(100);
     }
   }
 
   display.clearDisplay();
-  display.display();
+  display.setTextColor(SH110X_WHITE);
 
-  randomSeed(micros());
+  showIntro();
 
-  resetGame();
-  drawStartScreen();
+  // Prevent the intro touch from becoming a jump
+  lastTouchState = digitalRead(TOUCH_PIN);
 }
 
-// ======================================================
+// ----------------------------------------------------
 // LOOP
-// ======================================================
+// ----------------------------------------------------
 
 void loop() {
-  if (newTouch()) {
-    if (gameState == START_SCREEN) {
+
+  // --------------------------------------------------
+  // GAME OVER
+  // --------------------------------------------------
+
+  if (gameOver) {
+
+    showGameOver();
+
+    bool touchState = digitalRead(TOUCH_PIN);
+
+    // New touch detected
+    if (touchState == HIGH && lastTouchState == LOW) {
+
       resetGame();
-      gameState = PLAYING;
+
+      // Wait for finger release
+      while (digitalRead(TOUCH_PIN) == HIGH) {
+        delay(5);
+        yield();
+      }
+
+      lastTouchState = LOW;
     }
-    else if (gameState == PLAYING) {
-      jump();
+    else {
+      lastTouchState = touchState;
     }
-    else if (gameState == GAME_OVER) {
-      resetGame();
-      gameState = PLAYING;
+
+    delay(10);
+    return;
+  }
+
+  // --------------------------------------------------
+  // TOUCH INPUT
+  // --------------------------------------------------
+
+  bool currentTouchState = digitalRead(TOUCH_PIN);
+
+  // Rising edge:
+  // LOW -> HIGH = new touch
+  if (
+    currentTouchState == HIGH &&
+    lastTouchState == LOW &&
+    isGrounded
+  ) {
+
+    velocityY = jumpPower;
+    isGrounded = false;
+  }
+
+  lastTouchState = currentTouchState;
+
+  // --------------------------------------------------
+  // DINO PHYSICS
+  // --------------------------------------------------
+
+  velocityY += gravity;
+  dinoY += velocityY;
+
+  // Floor
+  if (dinoY >= 48) {
+
+    dinoY = 48;
+    velocityY = 0;
+    isGrounded = true;
+  }
+
+  // --------------------------------------------------
+  // MOVE CACTUS
+  // --------------------------------------------------
+
+  cactusX -= cactusSpeed;
+
+  // Passed obstacle
+  if (cactusX < -cactusWidth) {
+
+    cactusX = 128;
+
+    score++;
+
+    // Increase difficulty
+    if (
+      score % 5 == 0 &&
+      cactusSpeed < 8.0
+    ) {
+
+      cactusSpeed += 0.5;
+    }
+
+    // Single or double cactus
+    obstacleType = random(1, 3);
+
+    if (obstacleType == 1) {
+      cactusWidth = 16;
+    }
+    else {
+      cactusWidth = 28;
     }
   }
 
-  if (millis() - lastFrameTime >= FRAME_TIME) {
-    lastFrameTime = millis();
+  // --------------------------------------------------
+  // COLLISION DETECTION
+  // --------------------------------------------------
 
-    if (gameState == START_SCREEN) {
-      drawStartScreen();
-    }
-    else if (gameState == PLAYING) {
-      updateGame();
-      drawGame();
-    }
-    else if (gameState == GAME_OVER) {
-      drawGameOver();
-    }
+  int dinoX = 10;
+  int dinoWidth = 16;
+  int dinoHeight = 16;
+
+  int cactusY = 48;
+  int cactusHeight = 16;
+
+  int hitMargin = 3;
+
+  bool collisionX =
+    dinoX + hitMargin <
+      cactusX + cactusWidth - hitMargin &&
+    dinoX + dinoWidth - hitMargin >
+      cactusX + hitMargin;
+
+  bool collisionY =
+    (int)dinoY + hitMargin <
+      cactusY + cactusHeight - hitMargin &&
+    (int)dinoY + dinoHeight - hitMargin >
+      cactusY + hitMargin;
+
+  if (collisionX && collisionY) {
+
+    gameOver = true;
+
+    return;
   }
+
+  // --------------------------------------------------
+  // DINO LEG ANIMATION
+  // --------------------------------------------------
+
+  unsigned long currentMillis = millis();
+
+  if (
+    currentMillis - previousMillis >=
+    animationInterval
+  ) {
+
+    previousMillis = currentMillis;
+    useFrame1 = !useFrame1;
+  }
+
+  // --------------------------------------------------
+  // DRAW
+  // --------------------------------------------------
+
+  display.clearDisplay();
+
+  // Ground
+  display.drawLine(
+    0,
+    63,
+    127,
+    63,
+    SH110X_WHITE
+  );
+
+  // --------------------------------------------------
+  // DINO
+  // --------------------------------------------------
+
+  if (!isGrounded) {
+
+    display.drawBitmap(
+      10,
+      (int)dinoY,
+      dino_run1,
+      16,
+      16,
+      SH110X_WHITE
+    );
+  }
+
+  else if (useFrame1) {
+
+    display.drawBitmap(
+      10,
+      (int)dinoY,
+      dino_run1,
+      16,
+      16,
+      SH110X_WHITE
+    );
+  }
+
+  else {
+
+    display.drawBitmap(
+      10,
+      (int)dinoY,
+      dino_run2,
+      16,
+      16,
+      SH110X_WHITE
+    );
+  }
+
+  // --------------------------------------------------
+  // CACTUS
+  // --------------------------------------------------
+
+  for (int i = 0; i < obstacleType; i++) {
+
+    display.drawBitmap(
+      (int)cactusX + (i * 12),
+      48,
+      cactus_sprite,
+      16,
+      16,
+      SH110X_WHITE
+    );
+  }
+
+  // --------------------------------------------------
+  // SCORE
+  // --------------------------------------------------
+
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+
+  display.setCursor(68, 2);
+
+  display.print("S:");
+  display.print(score);
+
+  // --------------------------------------------------
+
+  display.display();
+
+  // Around 60 FPS
+  delay(15);
 
   yield();
+}
+
+// ----------------------------------------------------
+// INTRO
+// ----------------------------------------------------
+
+void showIntro() {
+
+  display.clearDisplay();
+
+  display.setTextColor(SH110X_WHITE);
+
+  display.setTextSize(2);
+
+  display.setCursor(17, 8);
+  display.print("DINO RUN");
+
+  display.setTextSize(1);
+
+  display.setCursor(18, 38);
+  display.print("Touch to Start");
+
+  display.setCursor(25, 52);
+  display.print("ESP8266");
+
+  display.display();
+
+  // Wait for touch
+  while (digitalRead(TOUCH_PIN) == LOW) {
+    delay(5);
+    yield();
+  }
+
+  // Wait until finger is removed
+  while (digitalRead(TOUCH_PIN) == HIGH) {
+    delay(5);
+    yield();
+  }
+
+  delay(100);
+}
+
+// ----------------------------------------------------
+// GAME OVER SCREEN
+// ----------------------------------------------------
+
+void showGameOver() {
+
+  display.clearDisplay();
+
+  display.setTextColor(SH110X_WHITE);
+
+  display.setTextSize(2);
+
+  display.setCursor(10, 7);
+  display.print("GAME OVER");
+
+  display.setTextSize(1);
+
+  display.setCursor(39, 30);
+  display.print("Score:");
+  display.print(score);
+
+  display.setCursor(17, 48);
+  display.print("Touch to Retry");
+
+  display.display();
+}
+
+// ----------------------------------------------------
+// RESET
+// ----------------------------------------------------
+
+void resetGame() {
+
+  dinoY = 48;
+  velocityY = 0;
+
+  isGrounded = true;
+
+  cactusX = 128;
+  cactusSpeed = 4.0;
+
+  obstacleType = 1;
+  cactusWidth = 16;
+
+  score = 0;
+
+  gameOver = false;
+
+  useFrame1 = true;
+
+  previousMillis = millis();
 }
